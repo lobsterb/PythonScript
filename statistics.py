@@ -31,14 +31,14 @@ class IpInfo:
         self.dictUdid_ = {}
         # 客户端渠道 <str, int>
         self.dictMarket = {}
-        # 请求总时长
-        self.requestTotalTime_ = 0
         # 第一个请求时间
         self.firstReqTime_ = ""
         # 最后一个请求时间 = ""
         self.lastReqTime_ = ""
         # 访问次数
         self.requestCnts_ = 0
+        # 访问该请求共用多少时长
+        self.useTime_ = 0
 
 
 class RequestInfo:
@@ -50,6 +50,8 @@ class RequestInfo:
         self.dictIp_ = {}
         # 总计访问次数
         self.requestCnts_ = 0
+        # 访问该请求共用多少时长
+        self.useTime_ = 0
 
 
 class HandleHistory:
@@ -60,8 +62,12 @@ class HandleHistory:
         self.handleCnt_ = 0
         # 所有host <requestHeader, Request>
         self.dictRequest_ = {}
+        # 记录host - rul
         self.dictHR_ = {}
+        # 记录ip的访问次数
         self.dictIp_ = {}
+        # 记录url的访问次数
+        self.dictRC_ = {}
         self.startTime_ = time.time()
         self.handleSize_ = 0.0
 
@@ -148,7 +154,8 @@ def readOneRow(row):
         field.request_time = row[20].strip()
         field.status = row[21].strip()
         field.upstream_status = row[22].strip()
-    except:
+    except Exception as e:
+        logger.error("文件格式异常:{}", str(e))
         return None
 
     return field
@@ -164,10 +171,10 @@ def createIpInfo(filed):
     ip.dictOsName_[filed.http_x_vlight_os_name] = 1
     ip.dictUdid_[filed.http_x_vlight_udid] = 1
     ip.dictMarket[filed.http_x_vlight_market] = 1
-    ip.requestTotalTime_ = filed.request_time
     ip.firstReqTime_ = filed.__TIMESTAMP__
     ip.lastReqTime_ = filed.__TIMESTAMP__
     ip.requestCnts_ += 1
+    ip.useTime_ += float(filed.request_time)
     return ip
 
 
@@ -212,8 +219,6 @@ def updateIpInfo(ip, filed):
     else:
         ip.dictMarket[filed.http_x_vlight_market] = 1
 
-    ip.requestTotalTime_ += filed.request_time
-
     if filed.__TIMESTAMP__ < ip.firstReqTime_:
         ip.firstReqTime_ = filed.__TIMESTAMP__
 
@@ -221,7 +226,7 @@ def updateIpInfo(ip, filed):
         ip.lastReqTime_ = filed.__TIMESTAMP__
 
     ip.requestCnts_ += 1
-
+    ip.useTime_ += float(filed.request_time)
 
 def extratHeader(request):
     fullHeader = ""
@@ -288,15 +293,13 @@ def extratHeader(request):
     return fullHeader
 
 
-def newRequest(fullHeader, ip, filed):
+def newRequest(fullHeader, filed):
     global gHistory
     ri = RequestInfo()
     ri.host_ = filed.host
     ri.header_ = fullHeader
-    ri.dictIp_[filed.remote_addr] = ip
-    gHistory.dictRequest_[fullHeader] = ri
     ri.requestCnts_ += 1
-    gHistory.dictHR_[fullHeader] = filed.host
+    ri.useTime_ += float(filed.request_time)
     return ri
 
 
@@ -333,8 +336,6 @@ def readCsv(fullPath):
             if fullHeader == "":
                 continue
 
-            ip = createIpInfo(filed)
-
             # 查找该请求是否存在
             if fullHeader in gHistory.dictRequest_:
                 ri = gHistory.dictRequest_[fullHeader]
@@ -342,27 +343,44 @@ def readCsv(fullPath):
                 if filed.remote_addr in ri.dictIp_:
                     ip = ri.dictIp_[filed.remote_addr]
                     updateIpInfo(ip, filed)
-                    ri.requestCnts_ += 1
+
                 else:
-                    ri = newRequest(fullHeader, ip, filed)
+                    ip = createIpInfo(filed)
+                    ri.dictIp_[filed.remote_addr] = ip
+
+                ri.requestCnts_ += 1
+                ri.useTime_ += float(filed.request_time)
             else:
-                ri = newRequest(fullHeader, ip, filed)
+                ip = createIpInfo(filed)
+                ri = newRequest(fullHeader, filed)
+                ri.dictIp_[filed.remote_addr] = ip
+                gHistory.dictRequest_[fullHeader] = ri
+                gHistory.dictHR_[fullHeader] = filed.host
 
             gHistory.handleCnt_ += 1
             fileCnt_ += 1
             fileHandleCnt += 1
-            ip = filed.remote_addr.strip()
+            remoteAddr = filed.remote_addr.strip()
 
-            if ip in gHistory.dictIp_:
-                gHistory.dictIp_[ip] += 1
+            if fullHeader in gHistory.dictRC_:
+                gHistory.dictRC_[fullHeader] += 1
             else:
-                gHistory.dictIp_[ip] = 1
+                gHistory.dictRC_[fullHeader] = 1
+
+            if remoteAddr in gHistory.dictIp_:
+                gHistory.dictIp_[remoteAddr] += 1
+            else:
+                gHistory.dictIp_[remoteAddr] = 1
 
             if fileHandleCnt >= gLimit:
                 limitUseTime = time.time() - limitStartTime
                 logger.info("处理:{}条数据, 单次耗时:{}, url分类总个数:{}, 访问ip总个数:{}, 总处理条数:{}", fileHandleCnt,
                             round(limitUseTime, 2),
                             len(gHistory.dictRequest_), len(gHistory.dictIp_), gHistory.handleCnt_)
+
+                # dictTop = gHistory.dictRC_
+                # print(sorted(dictTop.items(), key=lambda x: x[1], reverse=True))
+
                 fileHandleCnt = 0
                 limitStartTime = time.time()
 
